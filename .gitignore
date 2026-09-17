@@ -1,0 +1,11 @@
+runtime/
+settings.json
+position.txt
+quota-cache.json
+widget-status.json
+widget.log
+check.json
+*.exe
+*.pdb
+*.zip
+tests/bin/
