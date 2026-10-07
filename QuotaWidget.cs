@@ -75,7 +75,8 @@ sealed class Preferences
     public double Glass { get; set; }
     public string Language { get; set; }
     public string DisplayStyle { get; set; }
-    public Preferences() { Topmost = true; AutoStart = true; Glass = 0.66; Language = "zh"; DisplayStyle = "rings"; }
+    public string Theme { get; set; }
+    public Preferences() { Topmost = true; AutoStart = true; Glass = 0.66; Language = "zh"; DisplayStyle = "rings"; Theme = "glass"; }
     public static Preferences Load()
     {
         try { return new JavaScriptSerializer().Deserialize<Preferences>(File.ReadAllText(Path.Combine(Program.Folder, "settings.json"))); }
@@ -127,11 +128,12 @@ sealed class QuotaGrid : FrameworkElement
 {
     public double? Value;
     public Color Tint;
+    public Color Dim = Color.FromArgb(46, 207, 226, 244);
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);
         int filled = Value.HasValue ? (int)Math.Round(Math.Max(0, Math.Min(100, Value.Value)) / 2.0, MidpointRounding.AwayFromZero) : 0;
-        var dim = new SolidColorBrush(Color.FromArgb(46, 207, 226, 244));
+        var dim = new SolidColorBrush(Dim);
         var lit = new SolidColorBrush(Tint);
         for (int col = 0; col < 10; col++)
             for (int row = 0; row < 5; row++)
@@ -146,16 +148,19 @@ sealed class QuotaGrid : FrameworkElement
 sealed class Widget : Window
 {
     readonly QuotaClient client = new QuotaClient(Program.Folder);
-    readonly Preferences prefs = Preferences.Load();
+    readonly Preferences prefs;
     readonly TextBlock[] numbers = new TextBlock[2], labels = new TextBlock[2], resets = new TextBlock[2], heatNumbers = new TextBlock[2];
     readonly QuotaRing[] rings = new QuotaRing[2];
     readonly QuotaGrid[] heatmaps = new QuotaGrid[2];
+    readonly QuotaInstrument[] instruments = new QuotaInstrument[2];
     readonly StackPanel[] ringViews = new StackPanel[2], heatViews = new StackPanel[2];
     readonly Border[] quotaPanels = new Border[2];
     readonly Color mint = Color.FromRgb(111, 241, 199), blue = Color.FromRgb(135, 197, 255), amber = Color.FromRgb(255, 199, 103);
     readonly TextBlock footer = new TextBlock();
     readonly Border dot = new Border();
     readonly Border card = new Border();
+    readonly QuotaDecoration decoration = new QuotaDecoration { IsHitTestVisible = false };
+    readonly TextBlock title = new TextBlock();
     readonly Button refresh = new Button();
     readonly DispatcherTimer timer = new DispatcherTimer();
     readonly EventWaitHandle showRequest;
@@ -166,8 +171,11 @@ sealed class Widget : Window
     int failures;
     string lastError = "", failureKind = "";
     string L(string zh, string en) { return prefs.Language == "en" ? en : zh; }
-    public Widget(EventWaitHandle show)
+    public Widget(EventWaitHandle show) : this(show, null) { }
+    // Preview construction never starts a timer, client, tray icon or startup link.
+    internal Widget(EventWaitHandle show, Preferences preview)
     {
+        prefs = preview ?? Preferences.Load();
         showRequest = show;
         Title = L("Codex 剩余额度", "Codex Quota"); Width = 270; Height = 190;
         Icon = System.Windows.Media.Imaging.BitmapFrame.Create(new Uri(Path.Combine(Program.Folder, "CodexQuota.ico")));
@@ -182,12 +190,14 @@ sealed class Widget : Window
         card.BorderThickness = new Thickness(1); card.BorderBrush = new SolidColorBrush(Color.FromArgb(55, 255, 255, 255));
         card.Effect = new DropShadowEffect { BlurRadius = 12, ShadowDepth = 2, Opacity = 0.22, Color = Colors.Black };
         ApplyGlass(); Content = card;
-        var body = new Grid(); card.Child = body;
+        var frame = new Grid(); card.Child = frame;
+        frame.Children.Add(decoration);
+        var body = new Grid(); frame.Children.Add(body);
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(19) });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(113) });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(17) });
         var header = new Grid(); body.Children.Add(header);
-        var title = Text("C O D E X", 10, FontWeights.SemiBold); title.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(title);
+        title.Text = "C O D E X"; title.FontSize = 10; title.FontWeight = FontWeights.SemiBold; title.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(title);
         dot.Width = dot.Height = 5; dot.CornerRadius = new CornerRadius(3); dot.HorizontalAlignment = HorizontalAlignment.Right; dot.VerticalAlignment = VerticalAlignment.Center; dot.Margin = new Thickness(0, 0, 25, 0); dot.Background = new SolidColorBrush(amber); header.Children.Add(dot);
         refresh.Content = "↻"; refresh.FontSize = 17; refresh.Width = 20; refresh.Height = 20; refresh.HorizontalAlignment = HorizontalAlignment.Right;
         refresh.Padding = new Thickness(0); refresh.Foreground = Brushes.White; refresh.Background = Brushes.Transparent; refresh.BorderThickness = new Thickness(0); refresh.Cursor = Cursors.Hand;
@@ -201,6 +211,7 @@ sealed class Widget : Window
             var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 5, 0, 0) };
             quotaPanels[i] = new Border { Child = stack }; Grid.SetColumn(quotaPanels[i], i); columns.Children.Add(quotaPanels[i]);
             var visual = new Grid { Width = 105, Height = 66 }; stack.Children.Add(visual);
+            instruments[i] = new QuotaInstrument { Width = 105, Height = 66, Visibility = Visibility.Collapsed }; visual.Children.Add(instruments[i]);
             ringViews[i] = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             visual.Children.Add(ringViews[i]);
             var circle = new Grid { Width = 58, Height = 58 }; ringViews[i].Children.Add(circle);
@@ -215,6 +226,8 @@ sealed class Widget : Window
         }
         footer.Text = L("正在连接…", "Connecting…"); footer.FontSize = 9; footer.HorizontalAlignment = HorizontalAlignment.Center; footer.VerticalAlignment = VerticalAlignment.Bottom;
         footer.Foreground = new SolidColorBrush(Color.FromRgb(205, 216, 230)); Grid.SetRow(footer, 2); body.Children.Add(footer);
+        ApplyTheme(); ApplyStyle();
+        if (preview != null) return;
         MouseLeftButtonDown += async (s, e) => {
             if (IsInsideButton(e.OriginalSource as DependencyObject)) return;
             if (e.ClickCount == 2) { await RefreshQuota(); return; }
@@ -244,22 +257,61 @@ sealed class Widget : Window
     void ApplyStyle()
     {
         bool grid = prefs.DisplayStyle == "grid";
-        for (int i = 0; i < 2; i++) { ringViews[i].Visibility = grid ? Visibility.Collapsed : Visibility.Visible; heatViews[i].Visibility = grid ? Visibility.Visible : Visibility.Collapsed; }
+        bool classic = QuotaTheme.Find(prefs.Theme).Code == "glass";
+        for (int i = 0; i < 2; i++) {
+            ringViews[i].Visibility = !grid && classic ? Visibility.Visible : Visibility.Collapsed;
+            heatViews[i].Visibility = grid ? Visibility.Visible : Visibility.Collapsed;
+            instruments[i].Visibility = !grid && !classic ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
     void ApplyLanguage()
     {
         Title = L("Codex 剩余额度", "Codex Quota");
         refresh.ToolTip = L("立即刷新（也可双击卡片）", "Refresh now (or double-click the card)");
         ContextMenu = BuildMenu(); SetTrayMenu();
-        RenderData(); UpdateFooter();
+        ApplyTheme(); RenderData(); UpdateFooter();
     }
-    void ApplyGlass() { prefs.Glass = Math.Max(0.35, Math.Min(0.95, prefs.Glass)); card.Background = new SolidColorBrush(Color.FromArgb((byte)(255 * prefs.Glass), 28, 36, 49)); }
+    void ApplyGlass()
+    {
+        prefs.Glass = Math.Max(0.35, Math.Min(0.95, prefs.Glass));
+        var color = QuotaTheme.Find(prefs.Theme).Background;
+        // Keep dark text legible on the light card over a dark wallpaper.
+        double opacity = prefs.Theme == "paper" ? 0.76 + prefs.Glass * 0.24 : prefs.Glass;
+        color.A = (byte)(255 * opacity); card.Background = new SolidColorBrush(color);
+    }
+    void ApplyTheme()
+    {
+        var theme = QuotaTheme.Find(prefs.Theme); prefs.Theme = theme.Code;
+        FontFamily = new FontFamily(theme.Font + ", Microsoft YaHei UI"); Foreground = theme.Brush(theme.Foreground);
+        card.CornerRadius = new CornerRadius(theme.Radius); card.BorderBrush = theme.Brush(theme.Code == "glass" ? Color.FromArgb(55, 255, 255, 255) : theme.Edge);
+        card.BorderThickness = new Thickness(theme.Code == "diesel" ? 1.6 : 0.8);
+        decoration.Theme = theme; decoration.InvalidateVisual();
+        title.Text = theme.Code == "drive" ? "CODEX / " + L("动力", "DRIVE") : theme.Code == "diesel" ? "CODEX / " + L("机舱", "ENGINE") : theme.Code == "hud" ? "CODEX // " + L("轨道", "ORBIT") : "C O D E X";
+        title.Foreground = theme.Brush(theme.Foreground); refresh.Foreground = theme.Brush(theme.Foreground);
+        footer.Foreground = theme.Brush(theme.Secondary);
+        for (int i = 0; i < 2; i++) {
+            numbers[i].Foreground = heatNumbers[i].Foreground = theme.Brush(theme.Foreground);
+            labels[i].Foreground = theme.Brush(theme.Foreground); resets[i].Foreground = theme.Brush(theme.Secondary);
+            instruments[i].Theme = theme; instruments[i].ReserveLabel = L("剩余", "RESERVE"); instruments[i].InvalidateVisual();
+            heatmaps[i].Dim = theme.Code == "paper" ? Color.FromRgb(208, 217, 204) : Color.FromArgb(80, theme.Edge.R, theme.Edge.G, theme.Edge.B);
+            heatmaps[i].InvalidateVisual();
+        }
+        ApplyGlass();
+    }
     ContextMenu BuildMenu()
     {
         var menu = new ContextMenu();
         var update = new MenuItem { Header = L("立即刷新", "Refresh now") }; update.Click += async (s, e) => await RefreshQuota(); menu.Items.Add(update);
         var detail = new MenuItem { Header = L("额度与连接详情", "Quota and connection details") }; detail.Click += (s, e) => MessageBox.Show(this, Details(), L("Codex 额度详情", "Codex quota details")); menu.Items.Add(detail);
         menu.Items.Add(new Separator());
+        var themes = new MenuItem { Header = L("界面主题", "Theme") }; menu.Items.Add(themes);
+        foreach (var option in QuotaTheme.All)
+        {
+            string code = option.Code;
+            var item = new MenuItem { Header = L(option.Chinese, option.English), IsCheckable = true, IsChecked = prefs.Theme == code };
+            item.Click += (s, e) => { prefs.Theme = code; ApplyTheme(); ApplyStyle(); RenderData(); UpdateFooter(); prefs.Save(); ContextMenu = BuildMenu(); };
+            themes.Items.Add(item);
+        }
         var language = new MenuItem { Header = L("语言", "Language") }; menu.Items.Add(language);
         foreach (var option in new[] { new { Code = "zh", Name = "中文" }, new { Code = "en", Name = "English" } })
         {
@@ -269,7 +321,7 @@ sealed class Widget : Window
             language.Items.Add(item);
         }
         var style = new MenuItem { Header = L("显示样式", "Display style") }; menu.Items.Add(style);
-        foreach (var option in new[] { new { Code = "rings", Name = L("圆环", "Rings") }, new { Code = "grid", Name = L("方格", "Contribution grid") } })
+        foreach (var option in new[] { new { Code = "rings", Name = L("主题仪表 / 圆环", "Theme gauge / rings") }, new { Code = "grid", Name = L("方格", "Contribution grid") } })
         {
             string code = option.Code;
             var item = new MenuItem { Header = option.Name, IsCheckable = true, IsChecked = prefs.DisplayStyle == code };
@@ -306,6 +358,7 @@ sealed class Widget : Window
     string Details() { return WindowDetails(0) + "\n\n" + WindowDetails(1) + "\n\n" + L("上次成功：", "Last success: ") + (lastSuccess == DateTime.MinValue ? L("尚无数据", "no data") : lastSuccess.ToLocalTime().ToString("MM-dd HH:mm:ss")) + (lastError == "" ? L("\n连接正常，每 60 秒刷新。", "\nConnected; refreshes every 60 seconds.") : "\n\n" + L("错误类型：", "Error type: ") + failureKind + "\n" + lastError + L("\n将自动重试；当前显示的是旧数据。", "\nRetrying automatically; displayed values are stale.")) + "\n\n" + L("开机自启：", "Start with Windows: ") + (File.Exists(StartupLink.FilePath) ? L("已启用", "enabled") : L("未启用", "disabled")); }
     void RenderData()
     {
+        var theme = QuotaTheme.Find(prefs.Theme);
         for (int i = 0; i < 2; i++)
         {
             var data = QuotaClient.Map(QuotaClient.Get(current, i == 0 ? "primary" : "secondary"));
@@ -313,16 +366,18 @@ sealed class Widget : Window
             double? remaining = used == null ? (double?)null : Math.Max(0, Math.Min(100, 100 - Convert.ToDouble(used)));
             numbers[i].Text = remaining.HasValue ? remaining.Value.ToString("0.#") + "%" : "—";
             heatNumbers[i].Text = numbers[i].Text;
-            rings[i].Value = remaining; rings[i].Tint = remaining.HasValue && remaining <= 10 ? amber : i == 0 ? mint : blue; rings[i].InvalidateVisual();
+            rings[i].Value = remaining; rings[i].Tint = remaining.HasValue && remaining <= 10 ? theme.Warning : i == 0 ? theme.First : theme.Second; rings[i].InvalidateVisual();
             heatmaps[i].Value = remaining; heatmaps[i].Tint = rings[i].Tint; heatmaps[i].InvalidateVisual();
+            instruments[i].Value = remaining; instruments[i].Tint = rings[i].Tint; instruments[i].InvalidateVisual();
             object minutes = QuotaClient.Get(data, "windowDurationMins");
             if (minutes != null) { int m = Convert.ToInt32(minutes); labels[i].Text = m == 10080 ? L("每周", "Weekly") : m % 60 == 0 ? (m / 60) + L(" 小时", " hours") : m + L(" 分钟", " minutes"); }
             else labels[i].Text = i == 0 ? L("短期", "Short term") : L("每周", "Weekly");
             object reset = QuotaClient.Get(data, "resetsAt");
             resets[i].Text = reset == null ? L("重置时间未知", "Reset unknown") : L("重置 ", "Reset ") + DateTimeOffset.FromUnixTimeSeconds(Convert.ToInt64(reset)).LocalDateTime.ToString("MM/dd HH:mm");
             quotaPanels[i].ToolTip = WindowDetails(i);
+            System.Windows.Automation.AutomationProperties.SetName(instruments[i], WindowDetails(i));
         }
-        tray.Text = L("Codex 剩余 ", "Codex left ") + numbers[0].Text + " / " + numbers[1].Text;
+        if (tray != null) tray.Text = L("Codex 剩余 ", "Codex left ") + numbers[0].Text + " / " + numbers[1].Text;
     }
     void LoadCache()
     {
@@ -334,12 +389,27 @@ sealed class Widget : Window
     }
     void UpdateFooter()
     {
-        dot.Background = new SolidColorBrush(lastError == "" && lastSuccess != DateTime.MinValue ? mint : amber);
+        var theme = QuotaTheme.Find(prefs.Theme);
+        dot.Background = theme.Brush(lastError == "" && lastSuccess != DateTime.MinValue ? theme.First : theme.Warning);
         if (busy) footer.Text = L("正在更新…", "Updating…");
         else if (lastError != "") footer.Text = (lastSuccess == DateTime.MinValue ? L("连接失败", "Offline") : L("旧数据", "Stale")) + " · " + L("下次尝试 ", "Retry ") + nextRefresh.ToLocalTime().ToString("HH:mm:ss");
         else if (lastSuccess != DateTime.MinValue) footer.Text = L("下次数据更新 ", "Next update ") + nextRefresh.ToLocalTime().ToString("HH:mm:ss");
         else footer.Text = L("正在连接…", "Connecting…");
         footer.ToolTip = Details();
+    }
+    internal static FrameworkElement PreviewCard(Preferences appearance, double? first, double? second)
+    {
+        var window = new Widget(null, appearance);
+        long shortReset = new DateTimeOffset(new DateTime(2026, 10, 8, 15, 30, 0)).ToUnixTimeSeconds();
+        long weekReset = new DateTimeOffset(new DateTime(2026, 10, 12, 9, 0, 0)).ToUnixTimeSeconds();
+        window.current = new Dictionary<string, object> {
+            { "primary", new Dictionary<string, object> { { "usedPercent", first.HasValue ? (object)(100 - first.Value) : null }, { "windowDurationMins", 300 }, { "resetsAt", shortReset } } },
+            { "secondary", new Dictionary<string, object> { { "usedPercent", second.HasValue ? (object)(100 - second.Value) : null }, { "windowDurationMins", 10080 }, { "resetsAt", weekReset } } }
+        };
+        window.RenderData(); window.lastSuccess = DateTime.UtcNow; window.UpdateFooter();
+        window.footer.Text = window.L("下次数据更新 12:01:00", "Next update 12:01:00");
+        var visual = (FrameworkElement)window.Content; window.Content = null;
+        return visual;
     }
     async Task RefreshQuota()
     {
