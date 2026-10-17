@@ -16,7 +16,7 @@ static class ThemePreview
     }
     static FrameworkElement Card(string theme, string lang, string style, double? first, double? second)
     {
-        var card = Widget.PreviewCard(new Preferences { Theme = theme, Language = lang, DisplayStyle = style, Glass = 0.88 }, first, second);
+        var card = Widget.PreviewCard(new Preferences { Theme = theme, Language = lang, DisplayStyle = style, Glass = 0.88, PerformanceEnabled = false }, first, second);
         card.Measure(new Size(270, 190)); card.Arrange(new Rect(0, 0, 270, 190)); card.UpdateLayout(); return card;
     }
     static void Text(DrawingContext dc, string text, double x, double y, double size, string hex)
@@ -28,6 +28,11 @@ static class ThemePreview
     {
         string output = Path.GetFullPath(args[0]); Directory.CreateDirectory(output);
         var application = new Application();
+        foreach (var theme in QuotaTheme.All) foreach (string language in new[] { "zh", "en" }) {
+            var card = Widget.PreviewCard(new Preferences { Theme = theme.Code, Language = language, Glass = 0.88 }, 76, 42);
+            card.Measure(new Size(270, 284)); card.Arrange(new Rect(0, 0, 270, 284)); card.UpdateLayout();
+            Save(card, 270, 284, Path.Combine(output, theme.Code + "-" + language + "-performance.png"));
+        }
         foreach (var theme in QuotaTheme.All)
             foreach (string language in new[] { "zh", "en" })
                 foreach (string style in new[] { "rings", "grid" })
@@ -62,6 +67,6 @@ static class ThemePreview
             Text(dc, "预览使用示例额度；实际程序显示当前账号数据。右键组件 → 界面主题。", 41, 766, 12, "#91A5B4");
         }
         Save(sheet, 960, 800, Path.Combine(output, "theme-overview.png"));
-        Console.WriteLine("Rendered 41 offline theme previews.");
+        Console.WriteLine("Rendered 51 offline theme and performance previews.");
     }
 }

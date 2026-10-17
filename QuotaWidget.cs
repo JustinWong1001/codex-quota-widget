@@ -43,6 +43,7 @@ static class Program
     {
         try
         {
+            if (args.Length > 0 && args[0] == "--cpu-sensor-helper") { CpuTemperatureBridge.Run(args); return; }
             if (args.Length > 0 && args[0] == "--check")
             {
                 try { using (var client = new QuotaClient(Folder)) File.WriteAllText(Path.Combine(Folder, "check.json"), new JavaScriptSerializer().Serialize(client.Read())); }
@@ -76,7 +77,9 @@ sealed class Preferences
     public string Language { get; set; }
     public string DisplayStyle { get; set; }
     public string Theme { get; set; }
-    public Preferences() { Topmost = true; AutoStart = true; Glass = 0.66; Language = "zh"; DisplayStyle = "rings"; Theme = "glass"; }
+    public bool PerformanceEnabled { get; set; }
+    public int PerformanceInterval { get; set; }
+    public Preferences() { Topmost = true; AutoStart = true; Glass = 0.66; Language = "zh"; DisplayStyle = "rings"; Theme = "glass"; PerformanceEnabled = true; PerformanceInterval = 10; }
     public static Preferences Load()
     {
         try { return new JavaScriptSerializer().Deserialize<Preferences>(File.ReadAllText(Path.Combine(Program.Folder, "settings.json"))); }
@@ -163,6 +166,15 @@ sealed class Widget : Window
     readonly TextBlock title = new TextBlock();
     readonly Button refresh = new Button();
     readonly DispatcherTimer timer = new DispatcherTimer();
+    readonly HardwareSampler hardware = new HardwareSampler();
+    readonly CpuTemperatureBridge cpuBridge = new CpuTemperatureBridge();
+    readonly Border performancePanel = new Border();
+    readonly RowDefinition performanceRow = new RowDefinition();
+    readonly TextBlock performanceTitle = new TextBlock(), performanceNote = new TextBlock();
+    readonly TextBlock[] performanceNames = new TextBlock[3], performanceValues = new TextBlock[3], performanceExtra = new TextBlock[3];
+    HardwareSample hardwareSample;
+    bool hardwareBusy;
+    DateTime nextHardware = DateTime.MinValue;
     readonly EventWaitHandle showRequest;
     readonly Forms.NotifyIcon tray;
     DateTime nextRefresh = DateTime.UtcNow, lastSuccess = DateTime.MinValue;
@@ -196,6 +208,7 @@ sealed class Widget : Window
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(19) });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(113) });
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(17) });
+        body.RowDefinitions.Add(performanceRow);
         var header = new Grid(); body.Children.Add(header);
         title.Text = "C O D E X"; title.FontSize = 10; title.FontWeight = FontWeights.SemiBold; title.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(title);
         dot.Width = dot.Height = 5; dot.CornerRadius = new CornerRadius(3); dot.HorizontalAlignment = HorizontalAlignment.Right; dot.VerticalAlignment = VerticalAlignment.Center; dot.Margin = new Thickness(0, 0, 25, 0); dot.Background = new SolidColorBrush(amber); header.Children.Add(dot);
@@ -226,6 +239,8 @@ sealed class Widget : Window
         }
         footer.Text = L("正在连接…", "Connecting…"); footer.FontSize = 9; footer.HorizontalAlignment = HorizontalAlignment.Center; footer.VerticalAlignment = VerticalAlignment.Bottom;
         footer.Foreground = new SolidColorBrush(Color.FromRgb(205, 216, 230)); Grid.SetRow(footer, 2); body.Children.Add(footer);
+        BuildPerformancePanel(); Grid.SetRow(performancePanel, 3); body.Children.Add(performancePanel);
+        ApplyPerformanceLayout();
         ApplyTheme(); ApplyStyle();
         if (preview != null) return;
         MouseLeftButtonDown += async (s, e) => {
@@ -236,15 +251,79 @@ sealed class Widget : Window
         ContextMenu = BuildMenu();
         tray = new Forms.NotifyIcon { Icon = new System.Drawing.Icon(Path.Combine(Program.Folder, "CodexQuota.ico"), 32, 32), Text = L("Codex 额度", "Codex Quota"), Visible = true };
         SetTrayMenu(); tray.DoubleClick += (s, e) => Dispatcher.Invoke(new Action(RestoreWindow));
-        timer.Interval = TimeSpan.FromSeconds(1); timer.Tick += async (s, e) => { if (showRequest.WaitOne(0)) RestoreWindow(); UpdateFooter(); if (!busy && DateTime.UtcNow >= nextRefresh) await RefreshQuota(); };
+        timer.Interval = TimeSpan.FromSeconds(1); timer.Tick += async (s, e) => { if (showRequest.WaitOne(0)) RestoreWindow(); await RefreshHardware(); if (!busy && DateTime.UtcNow >= nextRefresh) await RefreshQuota(); };
+        IsVisibleChanged += (s, e) => PauseHardwareIfNeeded();
+        StateChanged += (s, e) => PauseHardwareIfNeeded();
         Loaded += async (s, e) => {
             try { StartupLink.Set(prefs.AutoStart); Program.Log("autostart", prefs.AutoStart ? "enabled" : "disabled"); } catch (Exception error) { Program.Log("autostart-error", error.Message); MessageBox.Show(this, "开机自启设置失败：" + error.Message, "Codex 额度"); }
             prefs.Save(); ApplyStyle(); LoadCache(); timer.Start(); await RefreshQuota();
         };
-        Closing += (s, e) => { closing = true; timer.Stop(); SavePosition(); tray.Dispose(); client.Dispose(); };
+        Closing += (s, e) => { closing = true; timer.Stop(); cpuBridge.Dispose(); if (!hardwareBusy) hardware.Dispose(); SavePosition(); tray.Dispose(); client.Dispose(); };
     }
     static bool IsInsideButton(DependencyObject value) { while (value != null) { if (value is Button) return true; if (!(value is Visual)) return false; value = VisualTreeHelper.GetParent(value); } return false; }
     TextBlock Text(string value, double size, FontWeight weight) { return new TextBlock { Text = value, FontSize = size, FontWeight = weight }; }
+    void BuildPerformancePanel()
+    {
+        performancePanel.Margin = new Thickness(0, 8, 0, 0); performancePanel.Padding = new Thickness(0, 6, 0, 0); performancePanel.BorderThickness = new Thickness(0, 0.7, 0, 0);
+        var stack = new StackPanel(); performancePanel.Child = stack;
+        performanceTitle.FontSize = 9; stack.Children.Add(performanceTitle);
+        var grid = new Grid { Margin = new Thickness(0, 4, 0, 3) }; stack.Children.Add(grid);
+        for (int i = 0; i < 3; i++) {
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            var column = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center }; Grid.SetColumn(column, i); grid.Children.Add(column);
+            performanceNames[i] = Text(i == 0 ? "CPU" : i == 1 ? "RAM" : "GPU", 9, FontWeights.Normal);
+            performanceValues[i] = Text("—", 15, FontWeights.SemiBold);
+            performanceExtra[i] = Text("—", 9, FontWeights.Normal);
+            foreach (var text in new[] { performanceNames[i], performanceValues[i], performanceExtra[i] }) { text.HorizontalAlignment = HorizontalAlignment.Center; column.Children.Add(text); }
+        }
+        performanceNote.FontSize = 9; performanceNote.HorizontalAlignment = HorizontalAlignment.Center; stack.Children.Add(performanceNote);
+    }
+    void ApplyPerformanceLayout()
+    {
+        if (prefs.PerformanceInterval != 5 && prefs.PerformanceInterval != 10 && prefs.PerformanceInterval != 30) prefs.PerformanceInterval = 10;
+        performanceRow.Height = new GridLength(prefs.PerformanceEnabled ? 94 : 0);
+        performancePanel.Visibility = prefs.PerformanceEnabled ? Visibility.Visible : Visibility.Collapsed;
+        // A WPF drop-shadow effect re-rasterizes the whole translucent card for
+        // small numeric changes. The border is sufficient in monitoring mode.
+        card.Effect = prefs.PerformanceEnabled ? null : new DropShadowEffect { BlurRadius = 12, ShadowDepth = 2, Opacity = 0.22, Color = Colors.Black };
+        Height = prefs.PerformanceEnabled ? 284 : 190;
+        EnsureOnScreen(); RenderHardware();
+    }
+    bool HardwareActive { get { return !closing && prefs.PerformanceEnabled && IsVisible && WindowState != WindowState.Minimized; } }
+    void PauseHardwareIfNeeded()
+    {
+        cpuBridge.SetActive(HardwareActive); nextHardware = DateTime.MinValue;
+        if (!HardwareActive && !hardwareBusy) hardware.Pause();
+    }
+    static string Percent(double? value) { return value.HasValue ? value.Value.ToString("0") + "%" : "—"; }
+    static string Degrees(double? value) { return value.HasValue ? value.Value.ToString("0") + " °C" : "—"; }
+    void RenderHardware()
+    {
+        performanceTitle.Text = L("电脑性能", "SYSTEM") + " · " + prefs.PerformanceInterval + L(" 秒", " s");
+        var sample = hardwareSample;
+        performanceValues[0].Text = Percent(sample == null ? null : sample.CpuLoad);
+        performanceValues[1].Text = Percent(sample == null ? null : sample.MemoryLoad);
+        performanceValues[2].Text = Percent(sample == null ? null : sample.GpuLoad);
+        performanceExtra[0].Text = Degrees(sample == null ? null : sample.CpuTemperature);
+        performanceExtra[1].Text = sample != null && sample.MemoryUsedGb.HasValue ? sample.MemoryUsedGb.Value.ToString("0.0") + "/" + sample.MemoryTotalGb.Value.ToString("0.0") + " GB" : "—";
+        performanceExtra[2].Text = Degrees(sample == null ? null : sample.GpuTemperature);
+        performanceNote.Text = sample == null ? L("正在采样…", "Sampling…") : sample.OnBattery ? L("电池供电 · 显卡采样暂停", "On battery · GPU paused") : sample.GpuMemoryUsedGb.HasValue ? "VRAM " + sample.GpuMemoryUsedGb.Value.ToString("0.0") + " / " + sample.GpuMemoryTotalGb.Value.ToString("0.0") + " GB" : L("显卡传感器不可用", "GPU sensors unavailable");
+        performancePanel.ToolTip = L("CPU 占用、物理内存占用；GPU 为第一张 NVIDIA 显卡。\n温度约每 10 秒采样，隐藏或最小化时暂停。\nCPU 温度为 — 时，可在右键 → 性能监控中授权读取。\n未安装额外驱动。", "CPU busy time and physical RAM usage; GPU is the first NVIDIA adapter.\nTemperatures sampled about every 10 s; paused when hidden/minimized.\nIf CPU temperature is —, authorize it under Performance monitoring.\nNo additional driver installed.") + (sample == null ? "" : "\n" + sample.GpuName + "\n" + L("采样时间：", "Sampled: ") + sample.Time.ToLocalTime().ToString("HH:mm:ss"));
+    }
+    async Task RefreshHardware()
+    {
+        if (!HardwareActive || hardwareBusy || DateTime.UtcNow < nextHardware) return;
+        hardwareBusy = true;
+        bool battery = Forms.SystemInformation.PowerStatus.PowerLineStatus == Forms.PowerLineStatus.Offline;
+        nextHardware = DateTime.UtcNow.AddSeconds(battery ? Math.Max(10, prefs.PerformanceInterval) : prefs.PerformanceInterval);
+        try {
+            var result = await Task.Run(() => hardware.Read(battery));
+            if (!HardwareActive) return;
+            if (cpuBridge.Running) result.CpuTemperature = cpuBridge.Read();
+            hardwareSample = result; RenderHardware();
+        } catch { if (!closing) { hardwareSample = null; RenderHardware(); performanceNote.Text = L("传感器读取失败，下次重试", "Sensors unavailable; retrying"); } }
+        finally { hardwareBusy = false; if (closing) hardware.Dispose(); else if (!HardwareActive) hardware.Pause(); }
+    }
     void SetTrayMenu()
     {
         var previous = tray.ContextMenuStrip;
@@ -269,7 +348,7 @@ sealed class Widget : Window
         Title = L("Codex 剩余额度", "Codex Quota");
         refresh.ToolTip = L("立即刷新（也可双击卡片）", "Refresh now (or double-click the card)");
         ContextMenu = BuildMenu(); SetTrayMenu();
-        ApplyTheme(); RenderData(); UpdateFooter();
+        ApplyTheme(); RenderData(); RenderHardware(); UpdateFooter();
     }
     void ApplyGlass()
     {
@@ -289,6 +368,8 @@ sealed class Widget : Window
         title.Text = theme.Code == "drive" ? "CODEX / " + L("动力", "DRIVE") : theme.Code == "diesel" ? "CODEX / " + L("机舱", "ENGINE") : theme.Code == "hud" ? "CODEX // " + L("轨道", "ORBIT") : "C O D E X";
         title.Foreground = theme.Brush(theme.Foreground); refresh.Foreground = theme.Brush(theme.Foreground);
         footer.Foreground = theme.Brush(theme.Secondary);
+        performancePanel.BorderBrush = theme.Brush(theme.Edge); performanceTitle.Foreground = performanceNote.Foreground = theme.Brush(theme.Secondary);
+        for (int i = 0; i < 3; i++) { performanceNames[i].Foreground = performanceExtra[i].Foreground = theme.Brush(theme.Secondary); performanceValues[i].Foreground = theme.Brush(theme.Foreground); }
         for (int i = 0; i < 2; i++) {
             numbers[i].Foreground = heatNumbers[i].Foreground = theme.Brush(theme.Foreground);
             labels[i].Foreground = theme.Brush(theme.Foreground); resets[i].Foreground = theme.Brush(theme.Secondary);
@@ -304,6 +385,21 @@ sealed class Widget : Window
         var update = new MenuItem { Header = L("立即刷新", "Refresh now") }; update.Click += async (s, e) => await RefreshQuota(); menu.Items.Add(update);
         var detail = new MenuItem { Header = L("额度与连接详情", "Quota and connection details") }; detail.Click += (s, e) => MessageBox.Show(this, Details(), L("Codex 额度详情", "Codex quota details")); menu.Items.Add(detail);
         menu.Items.Add(new Separator());
+        var monitoring = new MenuItem { Header = L("性能监控", "Performance monitoring") }; menu.Items.Add(monitoring);
+        var enabled = new MenuItem { Header = L("显示性能面板", "Show performance panel"), IsCheckable = true, IsChecked = prefs.PerformanceEnabled };
+        enabled.Click += (s, e) => { prefs.PerformanceEnabled = enabled.IsChecked; ApplyPerformanceLayout(); PauseHardwareIfNeeded(); prefs.Save(); ContextMenu = BuildMenu(); }; monitoring.Items.Add(enabled);
+        foreach (int seconds in new[] { 5, 10, 30 }) {
+            int interval = seconds; var item = new MenuItem { Header = interval + L(" 秒刷新", " s refresh"), IsCheckable = true, IsChecked = prefs.PerformanceInterval == interval };
+            item.Click += (s, e) => { prefs.PerformanceInterval = interval; nextHardware = DateTime.MinValue; prefs.Save(); RenderHardware(); ContextMenu = BuildMenu(); }; monitoring.Items.Add(item);
+        }
+        var authorize = new MenuItem { Header = L("授权 CPU 温度（Windows 管理员确认）", "Authorize CPU temperature (Windows admin prompt)") };
+        authorize.Click += (s, e) => {
+            try { cpuBridge.Start(Path.Combine(Program.Folder, "CodexQuota.exe")); cpuBridge.SetActive(HardwareActive); nextHardware = DateTime.MinValue; }
+            catch (System.ComponentModel.Win32Exception error) { if (error.NativeErrorCode != 1223) MessageBox.Show(this, error.Message); }
+            catch (Exception error) { MessageBox.Show(this, error.Message); }
+        }; monitoring.Items.Add(authorize);
+        var stopCpu = new MenuItem { Header = L("停止 CPU 温度授权进程", "Stop CPU temperature helper") };
+        stopCpu.Click += (s, e) => { cpuBridge.Dispose(); if (hardwareSample != null) hardwareSample.CpuTemperature = null; RenderHardware(); }; monitoring.Items.Add(stopCpu);
         var themes = new MenuItem { Header = L("界面主题", "Theme") }; menu.Items.Add(themes);
         foreach (var option in QuotaTheme.All)
         {
@@ -400,6 +496,10 @@ sealed class Widget : Window
     internal static FrameworkElement PreviewCard(Preferences appearance, double? first, double? second)
     {
         var window = new Widget(null, appearance);
+        if (appearance.PerformanceEnabled) {
+            window.hardwareSample = new HardwareSample { CpuLoad = 18, CpuTemperature = 54, MemoryLoad = 47, MemoryUsedGb = 15.0, MemoryTotalGb = 32, GpuLoad = 12, GpuTemperature = 49, GpuMemoryUsedGb = 2.1, GpuMemoryTotalGb = 8 };
+            window.RenderHardware();
+        }
         long shortReset = new DateTimeOffset(new DateTime(2026, 10, 8, 15, 30, 0)).ToUnixTimeSeconds();
         long weekReset = new DateTimeOffset(new DateTime(2026, 10, 12, 9, 0, 0)).ToUnixTimeSeconds();
         window.current = new Dictionary<string, object> {

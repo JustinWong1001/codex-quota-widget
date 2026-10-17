@@ -8,3 +8,8 @@ $quotaTestExe = Join-Path $quotaBin 'QuotaClientTests.exe'
 if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed.' }
 & $quotaTestExe
 if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
+$quotaHardwareExe = Join-Path $quotaBin 'HardwareTests.exe'
+& $quotaCompiler /nologo /target:exe ('/out:' + $quotaHardwareExe) /reference:System.Management.dll /reference:System.Web.Extensions.dll (Join-Path $PSScriptRoot 'HardwareTests.cs') (Join-Path $quotaRoot 'HardwareMonitor.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Hardware test compilation failed.' }
+& $quotaHardwareExe
+if ($LASTEXITCODE -ne 0) { throw 'Hardware tests failed.' }
