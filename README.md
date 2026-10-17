@@ -19,7 +19,7 @@
 
 ## 下载和运行
 
-从本仓库 [Releases](../../releases/latest) 下载 `CodexQuota-v1.3.0-windows.zip`，完整解压到有写入权限的固定目录。
+从本仓库 [Releases](../../releases/latest) 下载 `CodexQuota-v1.3.1-windows.zip`，完整解压到有写入权限的固定目录。
 
 运行环境：Windows 10/11、.NET Framework 4.7.2 或更新版本，以及已安装并使用 ChatGPT 账号登录的 Codex CLI。程序优先查找当前用户 npm 全局安装的 CLI，其次查找 PATH 中的 `codex.exe`。
 
@@ -63,11 +63,13 @@
 
 NVIDIA GPU 通过系统目录内驱动自带的 NVML 读取，不循环启动外部命令。首次初始化会加载驱动库；独显查询可能唤醒独显，因此电池供电时默认暂停 GPU 查询并释放 NVML。AMD / Intel 显卡暂不支持该温度接口，缺失项目显示 —，不会用 0 代替。显存为 NVML 报告的使用量。
 
-CPU 温度当前使用联想 `LENOVO_GAMEZONE_DATA.GetCPUTemp` 只读接口，不把 ACPI 主板热区冒充 CPU 温度。若普通权限无法访问，可手动选择「授权 CPU 温度（Windows 管理员确认）」并由用户确认 Windows 提示。独立辅助进程只读取温度，不访问 Codex 账号、不安装驱动、不修改风扇/功耗设置，也不设为自启；退出组件时结束，下次启动需要重新授权。授权仍不能保证固件提供有效读数，其他品牌或未实现该接口时显示 —。
+CPU 温度优先使用联想新版 `LENOVO_OTHER_METHOD.GetFeatureValue` 的“CPU 当前温度”编号 `0x05040000`；不支持时回退 `LENOVO_GAMEZONE_DATA.GetCPUTemp`。成功后缓存接口，仅在查询失败时重新发现并退避重试。此编号不是可配置的温度限制。接口定义参考 [Lenovo Legion Toolkit](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit/blob/master/LenovoLegionToolkit.Lib/Enums.cs)。
+
+若普通权限无法访问，可手动选择「授权 CPU 温度（Windows 管理员确认）」并由用户确认 Windows 提示。独立辅助进程只读取温度，不访问 Codex 账号、不安装驱动、不修改风扇/功耗设置，也不设为自启；退出组件时结束，下次启动需要重新授权。授权仍不能保证固件提供有效读数，其他品牌或未实现该接口时显示 —。悬停 CPU 温度可查看接口来源或失败状态。
 
 采样在后台进行且不会重叠，不保存性能历史、不频繁写日志、不添加连续动画。开启性能面板时关闭整卡阴影效果，减少数值更新时的重绘。关闭面板、隐藏或最小化时停止采样；辅助进程保留但暂停查询，以免恢复时再次弹出授权。关闭辅助进程可在同一菜单操作。额度刷新仍为 60 秒，与性能采样分开。
 
-验证包含原有 12 项检查、8 项硬件数值检查和 2 项普通权限辅助进程生命周期检查，以及 NVIDIA 实机读数、暂停恢复和电池模式检查。CPU 温度管理员授权后的固件读数仍需在目标机器上人工确认。
+验证包含原有 12 项检查、8 项硬件数值检查、5 项温度接口回退检查和 2 项普通权限辅助进程生命周期检查，以及 NVIDIA 实机读数、暂停恢复和电池模式检查。新版联想固件 CPU 温度已完成管理员授权后的实机读取、持续更新和界面显示验证；其他机型仍取决于固件是否提供有效读数。
 
 接口参考：[Windows CPU 时间](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes)、[NVIDIA NVML](https://docs.nvidia.com/deploy/nvml-api/latest/api/group__nvmlDeviceQueries.html)。
 

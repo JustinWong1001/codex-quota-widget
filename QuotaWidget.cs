@@ -308,7 +308,9 @@ sealed class Widget : Window
         performanceExtra[1].Text = sample != null && sample.MemoryUsedGb.HasValue ? sample.MemoryUsedGb.Value.ToString("0.0") + "/" + sample.MemoryTotalGb.Value.ToString("0.0") + " GB" : "—";
         performanceExtra[2].Text = Degrees(sample == null ? null : sample.GpuTemperature);
         performanceNote.Text = sample == null ? L("正在采样…", "Sampling…") : sample.OnBattery ? L("电池供电 · 显卡采样暂停", "On battery · GPU paused") : sample.GpuMemoryUsedGb.HasValue ? "VRAM " + sample.GpuMemoryUsedGb.Value.ToString("0.0") + " / " + sample.GpuMemoryTotalGb.Value.ToString("0.0") + " GB" : L("显卡传感器不可用", "GPU sensors unavailable");
-        performancePanel.ToolTip = L("CPU 占用、物理内存占用；GPU 为第一张 NVIDIA 显卡。\n温度约每 10 秒采样，隐藏或最小化时暂停。\nCPU 温度为 — 时，可在右键 → 性能监控中授权读取。\n未安装额外驱动。", "CPU busy time and physical RAM usage; GPU is the first NVIDIA adapter.\nTemperatures sampled about every 10 s; paused when hidden/minimized.\nIf CPU temperature is —, authorize it under Performance monitoring.\nNo additional driver installed.") + (sample == null ? "" : "\n" + sample.GpuName + "\n" + L("采样时间：", "Sampled: ") + sample.Time.ToLocalTime().ToString("HH:mm:ss"));
+        string cpuStatus = cpuBridge.Running || sample == null || !sample.CpuTemperature.HasValue ? cpuBridge.Describe(prefs.Language == "en") : L("CPU 温度：普通权限固件接口。", "CPU temperature: non-elevated firmware interface.");
+        performanceExtra[0].ToolTip = cpuStatus;
+        performancePanel.ToolTip = L("CPU 占用、物理内存占用；GPU 为第一张 NVIDIA 显卡。\n温度约每 10 秒采样，隐藏或最小化时暂停。\nCPU 温度为 — 时，可在右键 → 性能监控中授权读取。\n未安装额外驱动。", "CPU busy time and physical RAM usage; GPU is the first NVIDIA adapter.\nTemperatures sampled about every 10 s; paused when hidden/minimized.\nIf CPU temperature is —, authorize it under Performance monitoring.\nNo additional driver installed.") + "\n" + cpuStatus + (sample == null ? "" : "\n" + sample.GpuName + "\n" + L("采样时间：", "Sampled: ") + sample.Time.ToLocalTime().ToString("HH:mm:ss"));
     }
     async Task RefreshHardware()
     {

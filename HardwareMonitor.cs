@@ -21,23 +21,69 @@ sealed class HardwareSample
 sealed class CpuTemperatureReader : IDisposable
 {
     ManagementObject sensor;
-    bool discovered;
+    int source;
+    DateTime retryAt;
+    public int Status { get; private set; }
+    public double RawTemperature { get; private set; }
+    // Current temperature, not the configurable temperature limit (0x0104FF00).
+    // Identifier documented by LenovoLegionToolkit.Lib/Enums.cs: CapabilityID.
+    internal const uint CurrentTemperatureId = 0x05040000;
+    internal static double? TrySources(Func<int, double?> read, out int selected)
+    {
+        selected = -1;
+        for (int i = 0; i < 2; i++) {
+            try {
+                double? value = read(i);
+                if (value.HasValue && HardwareSampler.Temperature(value.Value).HasValue) { selected = i; return value; }
+            } catch { /* A failed provider must not prevent the legacy fallback. */ }
+        }
+        return null;
+    }
+    double? Query(int kind)
+    {
+        using (var input = kind == 0 ? sensor.GetMethodParameters("GetFeatureValue") : null) {
+            if (input != null) input["IDs"] = CurrentTemperatureId;
+            using (var result = sensor.InvokeMethod(kind == 0 ? "GetFeatureValue" : "GetCPUTemp", input, new InvokeMethodOptions { Timeout = TimeSpan.FromSeconds(2) })) {
+                object raw = result[kind == 0 ? "value" : "Data"];
+                RawTemperature = raw == null ? double.NaN : Convert.ToDouble(raw);
+                var value = HardwareSampler.Temperature(RawTemperature);
+                Status = value.HasValue ? kind + 1 : -2;
+                return value;
+            }
+        }
+    }
+    double? Discover(int kind)
+    {
+        DisposeSensor();
+        try {
+            using (var search = new ManagementObjectSearcher("root\\wmi", "SELECT * FROM " + (kind == 0 ? "LENOVO_OTHER_METHOD" : "LENOVO_GAMEZONE_DATA"))) {
+                search.Options.Timeout = TimeSpan.FromSeconds(2);
+                using (var results = search.Get()) foreach (ManagementObject item in results) { sensor = item; break; }
+            }
+            if (sensor == null) { Status = -1; return null; }
+            var value = Query(kind);
+            if (!value.HasValue) DisposeSensor();
+            return value;
+        } catch (Exception error) { Status = error.HResult; DisposeSensor(); throw; }
+    }
     public double? Read()
     {
+        if (DateTime.UtcNow < retryAt) return null;
         try {
-            if (!discovered) {
-                discovered = true;
-                using (var search = new ManagementObjectSearcher("root\\wmi", "SELECT * FROM LENOVO_GAMEZONE_DATA")) {
-                    search.Options.Timeout = TimeSpan.FromSeconds(2);
-                    using (var results = search.Get()) foreach (ManagementObject item in results) { sensor = item; break; }
-                }
+            if (sensor != null) {
+                var cached = Query(source);
+                if (cached.HasValue) return cached;
+                DisposeSensor();
             }
-            if (sensor == null) return null;
-            using (var result = sensor.InvokeMethod("GetCPUTemp", null, new InvokeMethodOptions { Timeout = TimeSpan.FromSeconds(2) }))
-                return HardwareSampler.Temperature(Convert.ToDouble(result["Data"]));
-        } catch { Dispose(); return null; }
+            var value = TrySources(Discover, out source);
+            if (value.HasValue) return value;
+        } catch (Exception error) { Status = error.HResult; DisposeSensor(); }
+        // Avoid continuously probing unsupported or temporarily unavailable firmware.
+        retryAt = DateTime.UtcNow.AddMinutes(2);
+        return null;
     }
-    public void Dispose() { if (sensor != null) { sensor.Dispose(); sensor = null; } }
+    void DisposeSensor() { if (sensor != null) { sensor.Dispose(); sensor = null; } }
+    public void Dispose() { DisposeSensor(); }
 }
 
 // A user-started, read-only helper for firmware that requires elevation. It
@@ -80,6 +126,18 @@ sealed class CpuTemperatureBridge : IDisposable
         if (before != after || after <= 0 || DateTime.UtcNow.Ticks - after > TimeSpan.FromSeconds(30).Ticks) return null;
         return HardwareSampler.Temperature(value);
     }
+    public string Describe(bool english)
+    {
+        if (!Running || view == null) return english ? "CPU temperature: administrator authorization required." : "CPU 温度：需要管理员授权。";
+        long stamp = view.ReadInt64(8);
+        if (stamp <= 0 || DateTime.UtcNow.Ticks - stamp > TimeSpan.FromSeconds(30).Ticks) return english ? "CPU temperature: waiting for a fresh sensor reading." : "CPU 温度：等待传感器更新。";
+        int status = view.ReadInt32(20);
+        if (status == 1) return english ? "CPU temperature: Lenovo current-temperature capability." : "CPU 温度：联想新版当前温度接口。";
+        if (status == 2) return english ? "CPU temperature: Lenovo GameZone legacy interface." : "CPU 温度：联想 GameZone 旧接口。";
+        if (status == -2) return (english ? "CPU firmware returned an invalid reading: " : "CPU 固件返回无效读数：") + view.ReadDouble(24).ToString("0.##");
+        if (status == -1) return english ? "CPU temperature: no supported firmware sensor found." : "CPU 温度：未找到支持的固件传感器。";
+        return (english ? "CPU temperature query failed: 0x" : "CPU 温度查询失败：0x") + status.ToString("X8");
+    }
     public void Dispose()
     {
         if (stop != null) { stop.Set(); stop.Dispose(); stop = null; }
@@ -102,7 +160,9 @@ sealed class CpuTemperatureBridge : IDisposable
                     while (!parent.HasExited && !end.WaitOne(0)) {
                         if (data.ReadInt32(16) != 0) {
                             double? value = reader.Read();
-                            data.Write(8, 0L); data.Write(0, value ?? double.NaN); data.Write(8, DateTime.UtcNow.Ticks);
+                            data.Write(8, 0L); data.Write(0, value ?? double.NaN);
+                            data.Write(20, reader.Status); data.Write(24, reader.RawTemperature);
+                            data.Write(8, DateTime.UtcNow.Ticks);
                         }
                         if (end.WaitOne(10000)) break;
                     }

@@ -18,6 +18,18 @@ static class HardwareTests
         Check(!HardwareSampler.Temperature(0).HasValue && !HardwareSampler.Temperature(double.NaN).HasValue && !HardwareSampler.Temperature(999).HasValue, "Invalid temperature");
         Check(HardwareSampler.Temperature(65) == 65, "Temperature");
         Console.WriteLine("8 hardware checks passed");
+        int selected, calls = 0;
+        var temperature = CpuTemperatureReader.TrySources(i => { calls++; return 61; }, out selected);
+        Check(temperature == 61 && selected == 0 && calls == 1, "Prefer current-temperature interface without querying legacy");
+        temperature = CpuTemperatureReader.TrySources(i => i == 0 ? 0 : 64, out selected);
+        Check(temperature == 64 && selected == 1, "Zero is unsupported; fall back to legacy");
+        temperature = CpuTemperatureReader.TrySources(i => { if (i == 0) throw new InvalidOperationException(); return 58; }, out selected);
+        Check(temperature == 58 && selected == 1, "Provider failure must allow fallback");
+        temperature = CpuTemperatureReader.TrySources(i => double.NaN, out selected);
+        Check(!temperature.HasValue && selected == -1, "Missing values remain missing");
+        temperature = CpuTemperatureReader.TrySources(i => i == 0 ? double.PositiveInfinity : -1, out selected);
+        Check(!temperature.HasValue && selected == -1, "Invalid readings must not become a CPU temperature");
+        Console.WriteLine("5 CPU temperature fallback checks passed");
         using (var bridge = new CpuTemperatureBridge()) {
             int pid = bridge.Start(Process.GetCurrentProcess().MainModule.FileName, false);
             using (var child = Process.GetProcessById(pid)) {
