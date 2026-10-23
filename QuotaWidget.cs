@@ -164,6 +164,10 @@ sealed class Widget : Window
     readonly Border card = new Border();
     readonly QuotaDecoration decoration = new QuotaDecoration { IsHitTestVisible = false };
     readonly TextBlock title = new TextBlock();
+    readonly System.Windows.Shapes.Path serviceLogo = new System.Windows.Shapes.Path {
+        Data = ChatGptMark.Shape, Width = 18, Height = 18, Stretch = Stretch.Uniform,
+        VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left
+    };
     readonly Button refresh = new Button();
     readonly DispatcherTimer timer = new DispatcherTimer();
     readonly HardwareSampler hardware = new HardwareSampler();
@@ -210,7 +214,8 @@ sealed class Widget : Window
         body.RowDefinitions.Add(new RowDefinition { Height = new GridLength(17) });
         body.RowDefinitions.Add(performanceRow);
         var header = new Grid(); body.Children.Add(header);
-        title.Text = "C O D E X"; title.FontSize = 10; title.FontWeight = FontWeights.SemiBold; title.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(title);
+        serviceLogo.ToolTip = "ChatGPT"; System.Windows.Automation.AutomationProperties.SetName(serviceLogo, "ChatGPT logo"); header.Children.Add(serviceLogo);
+        title.Margin = new Thickness(27, 0, 0, 0); title.FontSize = 10; title.FontWeight = FontWeights.SemiBold; title.VerticalAlignment = VerticalAlignment.Center; header.Children.Add(title);
         dot.Width = dot.Height = 5; dot.CornerRadius = new CornerRadius(3); dot.HorizontalAlignment = HorizontalAlignment.Right; dot.VerticalAlignment = VerticalAlignment.Center; dot.Margin = new Thickness(0, 0, 25, 0); dot.Background = new SolidColorBrush(amber); header.Children.Add(dot);
         refresh.Content = "↻"; refresh.FontSize = 17; refresh.Width = 20; refresh.Height = 20; refresh.HorizontalAlignment = HorizontalAlignment.Right;
         refresh.Padding = new Thickness(0); refresh.Foreground = Brushes.White; refresh.Background = Brushes.Transparent; refresh.BorderThickness = new Thickness(0); refresh.Cursor = Cursors.Hand;
@@ -367,7 +372,8 @@ sealed class Widget : Window
         card.CornerRadius = new CornerRadius(theme.Radius); card.BorderBrush = theme.Brush(theme.Code == "glass" ? Color.FromArgb(55, 255, 255, 255) : theme.Edge);
         card.BorderThickness = new Thickness(theme.Code == "diesel" ? 1.6 : 0.8);
         decoration.Theme = theme; decoration.InvalidateVisual();
-        title.Text = theme.Code == "drive" ? "CODEX / " + L("动力", "DRIVE") : theme.Code == "diesel" ? "CODEX / " + L("机舱", "ENGINE") : theme.Code == "hud" ? "CODEX // " + L("轨道", "ORBIT") : "C O D E X";
+        title.Text = theme.Code == "drive" ? L("动力", "DRIVE") : theme.Code == "diesel" ? L("机舱", "ENGINE") : theme.Code == "hud" ? L("轨道", "ORBIT") : "";
+        serviceLogo.Fill = theme.Code == "paper" ? Brushes.Black : Brushes.White;
         title.Foreground = theme.Brush(theme.Foreground); refresh.Foreground = theme.Brush(theme.Foreground);
         footer.Foreground = theme.Brush(theme.Secondary);
         performancePanel.BorderBrush = theme.Brush(theme.Edge); performanceTitle.Foreground = performanceNote.Foreground = theme.Brush(theme.Secondary);

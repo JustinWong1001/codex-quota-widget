@@ -4,6 +4,23 @@ using System.Windows;
 using System.Windows.Automation.Peers;
 using System.Windows.Media;
 
+static class ChatGptMark
+{
+    // Unmodified path from OpenAI's official monochrome Blossom SVG. Embedded
+    // once and shared by all windows; no image decoder or network request.
+    public static readonly Geometry Shape = Load();
+    static Geometry Load()
+    {
+        var settings = new System.Xml.XmlReaderSettings { DtdProcessing = System.Xml.DtdProcessing.Prohibit, XmlResolver = null };
+        using (var stream = typeof(ChatGptMark).Assembly.GetManifestResourceStream("OpenAI.Blossom.svg"))
+        using (var reader = System.Xml.XmlReader.Create(stream, settings)) {
+            var document = new System.Xml.XmlDocument { XmlResolver = null }; document.Load(reader);
+            var geometry = Geometry.Parse("F1 " + document.GetElementsByTagName("path")[0].Attributes["d"].Value);
+            geometry.Freeze(); return geometry;
+        }
+    }
+}
+
 // All decoration is vector-drawn; no external images or animation are needed.
 sealed class QuotaTheme
 {

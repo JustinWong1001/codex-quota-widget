@@ -19,7 +19,7 @@
 
 ## 下载和运行
 
-从本仓库 [Releases](../../releases/latest) 下载 `CodexQuota-v1.3.1-windows.zip`，完整解压到有写入权限的固定目录。
+从本仓库 [Releases](../../releases/latest) 下载 `CodexQuota-v1.3.2-windows.zip`，完整解压到有写入权限的固定目录。
 
 运行环境：Windows 10/11、.NET Framework 4.7.2 或更新版本，以及已安装并使用 ChatGPT 账号登录的 Codex CLI。程序优先查找当前用户 npm 全局安装的 CLI，其次查找 PATH 中的 `codex.exe`。
 
@@ -106,3 +106,5 @@ CPU 温度优先使用联想新版 `LENOVO_OTHER_METHOD.GetFeatureValue` 的“C
 卸载前在右键菜单关闭自启，然后退出程序并删除应用目录与桌面快捷方式。
 
 这是独立桌面工具，与 OpenAI 官方没有隶属关系。
+
+窗口左上角用于标识所显示服务的 Blossom 标志来自 [OpenAI 官方素材](https://openai.com/brand/)，相关商标归 OpenAI 所有。原始 SVG 位于 `assets/OpenAI-Blossom.svg`，以矢量方式嵌入程序，深色主题显示白色、浅色主题显示黑色，不在运行时联网加载。

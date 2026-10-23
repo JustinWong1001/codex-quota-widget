@@ -4,6 +4,7 @@ $quotaSource = Split-Path $PSScriptRoot -Parent
 $quotaFramework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 $quotaPreview = Join-Path $quotaSource 'ThemePreview.exe'
 $quotaArgs = @('/nologo', '/target:exe', '/main:ThemePreview', ('/out:' + $quotaPreview),
+    ('/resource:' + (Join-Path $quotaSource 'assets\OpenAI-Blossom.svg') + ',OpenAI.Blossom.svg'),
     '/reference:System.Windows.Forms.dll', '/reference:System.Drawing.dll', '/reference:System.Web.Extensions.dll',
     '/reference:Microsoft.CSharp.dll', '/reference:System.Xaml.dll', '/reference:System.Management.dll',
     ('/reference:' + (Join-Path $quotaFramework 'WPF\PresentationFramework.dll')),
